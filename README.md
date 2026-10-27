@@ -26,6 +26,7 @@ bigdata-collection-labs-112404260119/
     ├── data/
     │   └── houseinfo.csv
     └── images/
+        ├── 00_mysql_start.png
         ├── 01_mysql_table.png
         ├── 02_selector_html.png
         ├── 03_parse_first.png
@@ -38,7 +39,8 @@ bigdata-collection-labs-112404260119/
         ├── 10_db_read_output.png
         ├── 11_db_import_output.png
         ├── 12_mysql_count.png
-        ├── 13_mysql_sample.png
+        ├── 13_mysql_sample_1.png
+        ├── 13_mysql_sample_2.png
         └── 14_db_check_output.png
 ```
 

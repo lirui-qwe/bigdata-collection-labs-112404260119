@@ -6,7 +6,7 @@
 - 实验日期：2026-10-27
 - GitHub 仓库链接：https://github.com/lirui-qwe/bigdata-collection-labs-112404260119
 - 源码文件名：`lab02/anjuke.ipynb`
-- 数据库与表：`smartpark_lab.houseinfo`
+- 数据库与表：`smartpark_lab.houseinfo`（L05 教学卷 `smartpark-student_l05-mysql-data`）
 - 数据来源：在线教学站 http://www.bspider.top/anjuke/
 - 访问时间及结果：2026-10-27 16:44 左右在线访问。用完整 Chrome 请求头请求首页返回 **HTTP 200**，页面标题“重庆二手房房产网，重庆二手房出售，重庆买房购房交易信息 - 58安居客”，首页解析出 **60** 条 `div.property`；若只把 UA 写成 `Mozilla/5.0`，同样返回 HTTP 200，但标题变成“访问验证-安居客”、房源节点为 0（见“问题与解决”）。
 - 快照文件来源与文件名（在线实验可写“不适用”）：不适用（本次在线采集成功，未使用网页快照）
@@ -15,16 +15,20 @@
 
 ## 第一阶段：MySQL Docker 更新与启动
 
-- 本次是否需要更新：**未使用 L05 增量更新包**。课程环境文件夹中只有 `start-course.bat`，没有 `start-mysql.bat`、`mysql-console.bat`、`l05-mysql.ps1` 等 L05 脚本；但 `docker-compose.yml` 中已配置 MySQL 服务（镜像 `mysql:8.4.11`，独立教学数据卷 `smartpark-student_student-mysql-data`），因此直接启动该服务并复用已有数据卷，未删卷、未重装。
+- 本次是否需要更新：**已按教师提供的 `L05_MySQL_学生环境增量更新包` 完成更新**。步骤：① 核对包内 `SHA256SUMS.txt`，5 个配套文件和 254 MB 离线镜像包校验全部通过；② 把 `l05-mysql-fresh-volume.yaml`、`start-mysql.bat`、`stop-mysql.bat`、`mysql-console.bat`、`l05-mysql.ps1` 复制到原课程目录（未覆盖 `docker-compose.yml`、`.env`、`workspace`）；③ 停止旧卷 MySQL（未删除旧卷 `smartpark-student_student-mysql-data`）；④ 用 `docker load` 导入包内 `mysql:8.4.11` 离线镜像，`docker image inspect` 的 ID 为 `sha256:85b9bf2e…`，与包内说明一致；⑤ 双击 `start-mysql.bat`，输出 `[PASS] L05 MySQL healthy，账号连接检查通过`。
+- L05 环境使用独立教学卷 `smartpark-student_l05-mysql-data`，不再向宿主机映射 3306，JupyterLab 仍通过 `mysql:3306` 连接；旧卷保留未动。
 - 更新或启动遇到的问题：
-  1. 环境缺少 L05 的 `start-mysql.bat` / `mysql-console.bat`。处理：在环境文件夹执行 `docker compose --profile mysql up -d mysql` 启动 MySQL，容器状态为 `Up (healthy)`，端口映射 `127.0.0.1:3306`。
-  2. 没有 `mysql-console.bat` 时用 Windows 终端执行 `docker exec -it smartpark-student-mysql-1 mysql -ustudent -p*** smartpark_lab --default-character-set=utf8mb4` 进入 `mysql>` 提示符，作用与课程 MySQL 终端一致；加 `--default-character-set=utf8mb4` 避免中文显示成 `?`。
+  1. **镜像 ID 不一致**：更新前本机 `mysql:8.4.11` 的 ID 是 `sha256:0f51e63e…`（此前从镜像源拉取），与包内说明要求的 `sha256:85b9bf2e…` 不同。按包内 README 先停旧容器、确认离线包 SHA256 后再 `docker load`，导入后 ID 与要求一致，才运行 `start-mysql.bat`。
+  2. **旧卷 MySQL 必须先停**：`l05-mysql.ps1` 检测到旧卷 MySQL 正在运行会拒绝启动（保护数据）。先 `docker compose --profile mysql stop mysql`，旧卷数据完整保留。
+  3. 进入命令行用包内 `mysql-console.bat`（自动使用 L05 账号和库），输入密码 `123456` 后出现 `mysql>`；终端另加 `--default-character-set=utf8mb4` 避免中文乱码。
 
 ### 启动环境与建表
 
-课程 JupyterLab（`http://127.0.0.1:8888`）与 MySQL 容器均在运行。在 MySQL 终端中执行 `USE smartpark_lab;`、`SHOW TABLES;`、`DESCRIBE houseinfo;`、`SELECT COUNT(*) AS before_count FROM houseinfo;`，结果如下图。
+课程 JupyterLab（`http://127.0.0.1:8888`）与 L05 MySQL 容器均在运行。`start-mysql.bat` 已完成建卷、启动和健康检查。在 MySQL 终端中执行 `USE smartpark_lab;`、`SHOW TABLES;`、`DESCRIBE houseinfo;`、`SELECT COUNT(*) AS before_count FROM houseinfo;`，结果如下图。L05 新卷是空库，建表后 `before_count` 为 0。
 
 **截图：** MySQL 启动成功提示，以及终端中 `USE smartpark_lab`、`SHOW TABLES`、`DESCRIBE houseinfo` 的执行结果。可分图。
+
+![start-mysql.bat 启动成功](images/00_mysql_start.png)
 
 ![MySQL 建表与入库前条数](images/01_mysql_table.png)
 
@@ -136,7 +140,9 @@
 
 ![入库后 MySQL 条数](images/12_mysql_count.png)
 
-![MySQL 中前 5 条样本（纵向显示）](images/13_mysql_sample.png)
+![MySQL 中前 3 条样本（纵向显示）](images/13_mysql_sample_1.png)
+
+![MySQL 中第 4—5 条样本（纵向显示）](images/13_mysql_sample_2.png)
 
 ![两次入库输出对比](images/11_db_import_output.png)
 
@@ -153,7 +159,7 @@
 
 说明：首次入库后的条数应等于去重后的CSV数据行数，8个字段的内容也应一致。若不一致，说明原因。总条数以实际结果为准。
 
-答：一致。首次入库后 `SELECT COUNT(*) AS after_count` 为 **498**，等于去重后 CSV 的数据行数 498，`executemany()` 受影响 498 行。第二次运行入库函数时“入库前条数 498、本次待新增 0 条”，跳过写入，总条数仍为 498，未重复增加。由于 `LIMIT 5` 的横向表格比终端宽，终端里改用 `\G` 纵向显示前 5 条，8 个字段都能完整看到。
+答：一致。首次入库后 `SELECT COUNT(*) AS after_count` 为 **498**，等于去重后 CSV 的数据行数 498，`executemany()` 受影响 498 行。第二次运行入库函数时“入库前条数 498、本次待新增 0 条”，跳过写入，总条数仍为 498，未重复增加。由于 `LIMIT 5` 横向表格比终端宽、纵向又超过一屏，样本分两张截图（第 1—3 条、第 4—5 条），均用 `\G` 完整显示 8 个字段。
 
 #### 逐条核对
 
@@ -173,8 +179,8 @@
 
 - 遇到的问题、处理方法及结果：
   1. **简短 UA 触发访问验证页**：按手册示例只用 `Mozilla/5.0` 作 UA 请求，返回 HTTP 200 但页面标题是“访问验证-安居客”、`div.property` 为 0；用 `curl/8.0` 也一样。处理：改用完整 Chrome 请求头（UA + Accept + Accept-Language + Referer），并在 `fetch_page()` 中检查页面标题，命中“访问验证”就抛异常停止采集，避免把验证页当房源页继续解析。结果：10 页全部正常返回。
-  2. **缺少 L05 启动脚本**：环境文件夹没有 `start-mysql.bat`、`mysql-console.bat`。处理：用 `docker compose --profile mysql up -d mysql` 启动已配置的 MySQL 服务，用 Windows 终端执行 `docker exec -it ... mysql ...` 进入客户端（未删卷、未重装）。结果：容器 healthy，`smartpark_lab.houseinfo` 正常建表和查询。
-  3. **终端表格过宽**：`SELECT ... LIMIT 5` 的横向结果比终端宽，中文行被折行、看不全。处理：查询末尾改用 `\G` 纵向显示，并另外截一张 `COUNT(*)` 的图；报告里的面积、单价、年代逐条核对用 Notebook 输出与 MySQL 终端两张证据互相印证。
+  2. **L05 增量包与镜像 ID**：增量包最初只在下载目录，课程目录没有 5 个脚本；本机 `mysql:8.4.11` 的 ID（`0f51e63e…`）也与包内要求的 `85b9bf2e…` 不一致。处理：按包内 README 校验 SHA256、复制 5 个文件、停旧卷 MySQL、导入离线镜像后再运行 `start-mysql.bat`（旧卷未删）。结果：`[PASS] L05 MySQL healthy`，新卷 `l05-mysql-data` 建表和查询正常。
+  3. **终端一屏放不下 5 条样本**：`SELECT ... LIMIT 5` 横向表格比终端宽，纵向 `\G` 又超过一屏。处理：样本分两张截图（第 1—3 条、第 4—5 条），均用 `\G` 完整显示 8 个字段；面积、单价、年代再用 Notebook 的逐条核对输出互相印证。
   4. **入库去重**：第一次入库写入 498 条；重跑时如果直接再 `executemany()` 会变成 996 条。处理：入库前先查库内已有的 8 字段集合，只插入不存在的记录；重跑输出“本次待新增 0 条”，总数保持 498。
 - 尚未解决的问题、未完成的步骤（没有可写“无”）：无。在线采集、CSV、入库和核对全部完成；未使用网页快照。
 
