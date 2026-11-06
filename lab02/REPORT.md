@@ -13,6 +13,8 @@
 
 > 填写要求：截图放在 `images/` 中，在对应位置插入图片。代码截图要显示文件名、行号或单元位置，用红框标出关键代码，每项写2—3句话解释。只截最终结果或只贴 AI 生成的文字，不能代替实验过程。未完成的项目写明原因，不填写预期结果，不展示个人账号密码。
 
+> 说明：关键代码均摘自 `lab02/anjuke.ipynb` 对应 Cell，按“请求—解析—翻页—CSV—入库”的顺序放在相关截图下方，便于对照。
+
 ## 第一阶段：MySQL Docker 更新与启动
 
 - 本次是否需要更新：**已按教师提供的 `L05_MySQL_学生环境增量更新包` 完成更新**。步骤：① 核对包内 `SHA256SUMS.txt`，5 个配套文件和 254 MB 离线镜像包校验全部通过；② 把 `l05-mysql-fresh-volume.yaml`、`start-mysql.bat`、`stop-mysql.bat`、`mysql-console.bat`、`l05-mysql.ps1` 复制到原课程目录（未覆盖 `docker-compose.yml`、`.env`、`workspace`）；③ 停止旧卷 MySQL（未删除旧卷 `smartpark-student_student-mysql-data`）；④ 用 `docker load` 导入包内 `mysql:8.4.11` 离线镜像，`docker image inspect` 的 ID 为 `sha256:85b9bf2e…`，与包内说明一致；⑤ 双击 `start-mysql.bat`，输出 `[PASS] L05 MySQL healthy，账号连接检查通过`。
@@ -37,6 +39,41 @@
 答：当前使用 `smartpark_lab` 数据库（执行 `USE smartpark_lab` 后返回 `Database changed`）。`SHOW TABLES` 显示库中有 `houseinfo` 表；`DESCRIBE` 显示 9 列：`id` 是 `int`、`NO`、`PRI`、`auto_increment`，由数据库自动生成，不参与采集；其余 8 列分别是 `title`（标题，卖点文案）、`house`（楼盘）、`address`（地址）、`struct`(户型，如 `3室2厅1卫`)、`area`（建筑面积，保留 `㎡`）、`floor`（楼层，如 `低层(共27层)`）、`maketime`（建造年代，缺失填空字符串）、`price`（每平方米单价，保留 `元/㎡`）。建表后 `COUNT(*)` 为 **0**（`before_count = 0`），是本次入库前的基线。
 
 ## 第二阶段：房源采集与 CSV 数据存储
+
+**关键代码 2-1：请求头与 `fetch_page()`（Cell 2）**
+
+```python
+import csv
+import time
+from pathlib import Path
+
+import requests
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin
+
+BASE_URL = "http://www.bspider.top/anjuke/"
+
+# 完整浏览器请求头：简短 UA 会被教学站的反爬拦截，返回“访问验证”页
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9",
+    "Referer": "http://www.bspider.top/",
+}
+
+
+def fetch_page(url):
+    """请求网页，检查 HTTP 状态与是否为验证页，返回 (状态码, 标题, BeautifulSoup 对象)"""
+    r = requests.get(url, headers=HEADERS, timeout=30)
+    r.raise_for_status()
+    r.encoding = r.apparent_encoding
+    soup = BeautifulSoup(r.text, "html.parser")
+    page_title = soup.title.get_text(strip=True) if soup.title else ""
+    if "访问验证" in page_title:
+        raise RuntimeError(f"触发访问验证页，停止采集：{page_title}")
+    return r.status_code, page_title, soup
+```
 
 ### 1. 网页分析与房源解析
 
@@ -82,6 +119,39 @@
 
 同一条房源右侧的“148万”来自 `property-price-total`，是总价（单位“万”），单位与量纲都与要求的单价不同，不能取。
 
+**关键代码 2-2：`parse_property()` 解析 8 个字段（Cell 6）**
+
+```python
+FIELDS = ["title", "house", "address", "struct", "area", "floor", "maketime", "price"]
+
+
+def parse_property(row):
+    """按固定顺序解析一条房源，返回 8 个字段"""
+    h3 = row.select_one("h3")
+    title = h3.get_text(strip=True) if h3 else ""
+
+    comm = row.select_one("p.property-content-info-comm-name")
+    house = comm.get_text(strip=True) if comm else ""
+
+    addr = row.select_one("p.property-content-info-comm-address")
+    address = addr.get_text(strip=True) if addr else ""
+
+    attr = row.select_one("p.property-content-info-attribute")
+    struct = attr.get_text(strip=True) if attr else ""
+
+    # 面积/楼层/年代按内容特征取值：节点缺失或顺序改变时不会取错
+    items = [p.get_text(strip=True) for p in row.select("p.property-content-info-text")]
+    items = [t for t in items if t and t != struct]
+    area = next((t for t in items if t.endswith("㎡")), "")
+    maketime = next((t for t in items if "建造" in t), "")   # 缺失时填空字符串
+    floor = next((t for t in items if t not in (area, maketime) and "层" in t), "")
+
+    avg = row.select_one("p.property-price-average")
+    price = avg.get_text(strip=True) if avg else ""
+
+    return [title, house, address, struct, area, floor, maketime, price]
+```
+
 说明：两个选择方法各用在哪里？怎样确认面积和单价没有取错？
 
 答：`select()` 用在整页范围（`soup.select("div.property")`）返回所有房源节点列表，列表中每一项对应一条房源；`select_one()` 用在单条房源内部，只取该字段的第一个匹配节点，找不到返回 `None`，因此取值前先判断节点是否存在。面积、楼层、建造年代都在同一组 `p.property-content-info-text` 里，按内容特征取值而不是按下标：面积取以 `㎡` 结尾的项；建造年代取包含“建造”的项，用 `next(..., "")` 在缺失时填空字符串；楼层取既不是面积也不是年代、且包含“层”的项，避免把“南北”这类朝向当成楼层。单价取 `p.property-price-average`（`16465元/㎡`），不取 `p.property-price-total`（`148万`）；取值后与网页原文逐字对照（`89.9㎡`、`16465元/㎡`、`2019年建造`），单位保留，确认没有取错。
@@ -102,6 +172,61 @@
 
 答：每页解析完后用 `next_btn = soup_page.select_one("a.next.next-active")` 找活动的“下一页”按钮；取地址必须用 `next_btn.get("href")`（`get_text()` 得到的是“下一页”三个字，不是地址），再用 `urljoin(current_url, href)` 用当前页地址补全成完整 URL，最后 `current_url = next_url` 进入下一页。防重复和防死循环有四层：① `next_btn is None` 时不取地址，直接判定末页；② `next_url.startswith(BASE_URL)` 保证地址不越出教学站；③ `visited` 集合记录已访问地址，重复地址立即报错中止；④ `max_pages=30` 安全页数上限，达到上限只记为中止、不算采集完成；此外每页之间 `time.sleep(1.5)` 降低请求频率。日志中第 2 页与第 1 页标题完全重复数为 0，说明翻页确实换页；第 10 页后按钮禁用，程序正常结束。
 
+**关键代码 2-3：`collect_all()` 翻页采集（Cell 8）**
+
+```python
+def collect_all(base_url, max_pages=30):
+    """翻页采集全部房源。out_list 定义在函数内部，而不是全局。"""
+    out_list = []            # 结果列表放在函数内部：每次调用都是新列表
+    visited = {base_url}     # 已访问地址集合，防止重复采集和无限循环
+    current_url = base_url
+    page_no = 0
+
+    while page_no < max_pages:
+        page_no += 1
+        _, _, soup_page = fetch_page(current_url)
+
+        page_rows = soup_page.select("div.property")
+        if not page_rows:
+            raise RuntimeError(f"第{page_no}页未解析到任何房源，结构异常，中止")
+        out_list.extend(parse_property(r) for r in page_rows)
+        print(f"第{page_no}页 | {current_url} | 本页 {len(page_rows)} 条 | 累计 {len(out_list)} 条")
+
+        if page_no == 2:
+            first_titles = {rec[0] for rec in out_list[:60]}
+            second_titles = {rec[0] for rec in out_list[60:120]}
+            print("    试采检查：第2页与第1页标题完全重复数 =", len(first_titles & second_titles))
+
+        # 停止条件 1：分页区域的“下一页”按钮不存在或已禁用（next-active 消失）
+        next_btn = soup_page.select_one("a.next.next-active")
+        if next_btn is None:
+            print(f"第{page_no}页的“下一页”按钮已禁用，判定到达末页，采集结束")
+            break
+
+        # href 原值通常只有 ?page=2 这样的相对值，用 urljoin() 用当前页地址补全
+        href = next_btn.get("href")
+        next_url = urljoin(current_url, href)
+        print(f"    下一页 href 原值: {href} -> urljoin 补全后: {next_url}")
+
+        # 停止条件 2：地址越出教学站，或重复访问（死循环保护）
+        if not next_url.startswith(BASE_URL):
+            raise RuntimeError(f"下一页地址越出教学站：{next_url}，中止")
+        if next_url in visited:
+            raise RuntimeError(f"下一页地址重复：{next_url}，可能死循环，中止")
+        visited.add(next_url)
+
+        current_url = next_url   # 更新地址，进入下一页
+        time.sleep(1.5)          # 每页之间等待，降低请求频率
+
+    if page_no >= max_pages:
+        print(f"达到安全页数上限 {max_pages}，记为中止，不能算采集完成")
+    return out_list
+
+
+all_records = collect_all(BASE_URL)
+print("采集总条数（去重前）:", len(all_records))
+```
+
 ### 3. 保存 CSV
 
 **截图：** CSV保存与回读代码、回读条数。框出编码、表头和数据写入部分。
@@ -113,6 +238,39 @@
 说明：8个字段的顺序是什么？按8个字段完全相同去重后，保存了多少条记录？
 
 答：顺序为 `title → house → address → struct → area → floor → maketime → price`，与建表列顺序一致。按 8 个字段完全相同去重（保留首次出现的顺序）：去重前 **600** 条，完全相同的重复 **102** 条，去重后保存 **498** 条。写入用 `csv.writer`，文件参数 `encoding="utf-8-sig"`（防止 Excel 打开中文乱码）、`newline=""`，第一行写 8 个字段的表头，之后每条记录恰好 8 项。用 `csv.DictReader` 回读，断言表头与 `FIELDS` 一致，数据行 **498** 行（表头不计入），首行、末行字段完整。
+
+**关键代码 2-4：去重与保存 CSV（Cell 10）**
+
+```python
+# 按 8 个字段完全相同去重（保持原顺序）
+seen = set()
+unique_records = []
+for rec in all_records:
+    key = tuple(rec)
+    if key not in seen:
+        seen.add(key)
+        unique_records.append(rec)
+
+dup_count = len(all_records) - len(unique_records)
+print(f"去重前 {len(all_records)} 条，完全相同的重复 {dup_count} 条，去重后 {len(unique_records)} 条")
+
+csv_path = Path("data/houseinfo.csv")
+csv_path.parent.mkdir(exist_ok=True)
+with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:   # utf-8-sig 防 Excel 乱码
+    writer = csv.writer(f)
+    writer.writerow(FIELDS)              # 表头：与 8 个字段顺序一致
+    writer.writerows(unique_records)     # 数据：每条恰好 8 项
+print("已保存:", csv_path)
+
+# 用 csv.DictReader 回读检查，表头不计入数据行数
+with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
+    reader = csv.DictReader(f)
+    assert reader.fieldnames == FIELDS, "回读表头顺序不正确"
+    back = list(reader)
+print("回读数据行数:", len(back))
+print("回读首行:", [back[0][k] for k in FIELDS])
+print("回读末行:", [back[-1][k] for k in FIELDS])
+```
 
 ## 第三阶段：MySQL 数据存储
 
@@ -131,6 +289,70 @@
 说明：每条记录怎样对应8个参数？成功、失败时分别做什么？再次运行时怎样避免重复插入？
 
 答：`csv.DictReader` 读入后，按 `FIELDS` 的固定顺序把每行整理成 `[title, house, address, struct, area, floor, maketime, price]`，INSERT 语句中 8 个字段对应 8 个 `%s` 占位符，`executemany(INSERT_SQL, new_records)` 按位置一一绑定，全部通过参数传递，不用字符串拼接或 f-string。连接参数为 `host="mysql"`、`port=3306`、`database="smartpark_lab"`、`user="student"`、`password="123456"`、`charset="utf8mb4"`、`autocommit=False`。成功时 `executemany()` 返回受影响行数后调用 `conn.commit()` 提交；失败时 `except` 分支调用 `conn.rollback()` 撤销本次未提交的修改并重新抛出异常；无论成败都在 `finally` 中先 `cursor.close()` 再 `conn.close()` 释放资源。再次运行时，先 `SELECT` 出库内已有记录的 8 字段元组集合，只插入集合中不存在的记录（自增长 `id` 不能防止房源重复），所以重跑不会重复插入，也不需要清空表。
+
+**关键代码 3-1：读取 CSV 并整理入库参数（Cell 12）**
+
+```python
+# 读取 CSV，检查表头，并按 8 个字段的固定顺序整理入库参数
+import pymysql
+
+with open("data/houseinfo.csv", "r", encoding="utf-8-sig", newline="") as f:
+    reader = csv.DictReader(f)
+    assert reader.fieldnames == FIELDS, "CSV 表头与预期不一致"
+    records = [[row[k] for k in FIELDS] for row in reader]   # 每条记录恰好 8 个值
+
+print("从 CSV 读入记录数:", len(records))
+print("首条记录的 8 个参数:")
+for name, val in zip(FIELDS, records[0]):
+    print(f"  {name:9s}= {val}")
+```
+
+**关键代码 3-2：`executemany()` 批量入库（Cell 13）**
+
+```python
+INSERT_SQL = """
+INSERT INTO houseinfo
+    (title, house, address, struct, area, floor, maketime, price)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+"""
+
+
+def import_to_mysql():
+    """把 CSV 记录写入 MySQL；按 8 个字段比较库内已有记录，只插入不存在的记录"""
+    conn = pymysql.connect(
+        host="mysql", port=3306, database="smartpark_lab",
+        user="student", password="123456",
+        charset="utf8mb4", autocommit=False,   # 由程序显式提交事务
+    )
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "SELECT title, house, address, struct, area, floor, maketime, price FROM houseinfo")
+        existing = {tuple(t) for t in cursor.fetchall()}
+        print("入库前条数:", len(existing))
+
+        # 避免重复插入：8 个字段完全相同的记录不再插入（自增长 id 不能防止房源重复）
+        new_records = [rec for rec in records if tuple(rec) not in existing]
+        print("本次待新增:", len(new_records), "条")
+
+        if new_records:
+            affected = cursor.executemany(INSERT_SQL, new_records)
+            conn.commit()      # 写入成功后提交
+            print(f"executemany() 受影响 {affected} 行，已 commit()")
+        else:
+            print("没有需要新增的记录，跳过写入")
+
+        cursor.execute("SELECT COUNT(*) FROM houseinfo")
+        print("入库后总条数:", cursor.fetchone()[0])
+    except Exception as e:
+        conn.rollback()        # 出错回滚，撤销本次未提交的修改
+        print("写入失败，已 rollback()：", e)
+        raise
+    finally:
+        cursor.close()         # 成功或失败都释放资源：先关游标，再关连接
+        conn.close()
+        print("游标和连接已关闭")
+```
 
 ### 2. 核对结果
 
@@ -202,6 +424,7 @@
 
 - [x] 实验一原仓库的 `lab02/` 中已有源码、CSV、报告和真实截图。
 - [x] 截图清楚，关键代码已框出，每项附有个人解释。
+- [x] 关键代码已贴在对应截图下方，并标注 Notebook Cell 位置。
 - [x] GitHub上能打开文件和图片，未上传个人账号密码、`.env`或教师答案。
 - [x] 未完成项已如实说明；学习通只交原仓库链接。
 
