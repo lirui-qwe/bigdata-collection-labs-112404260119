@@ -57,6 +57,14 @@
 
 答：删掉了从页面根节点到列表区域之间所有按位置（`nth-child`）定位的层级，只保留“刚好包住一条房源”的父容器 `div.property`，再在它内部用相对选择器找字段。确认方法：① 代码中 `soup.select("div.property")` 返回 **60** 个节点，与本页显示的房源数一致；② 每个节点内都同时含标题、楼盘、地址、属性组和价格，且不含下一条房源的内容（截图里红框只框住第一条，蓝框是其中的 `h3`）；③ 第一条、第二条、最后一条都能用同一组相对选择器取到完整字段。
 
+**主要代码 1：获取房源节点**
+
+```python
+rows = soup.select("div.property")      # 当前页所有房源卡片
+for row in rows:                        # 逐条遍历
+    rec = parse_property(row)
+```
+
 #### 解析8个字段
 
 **截图：** 自己编写的解析代码和首条房源的8个字段输出。代码中必须框出：
@@ -86,6 +94,17 @@
 
 答：`select()` 用在整页范围（`soup.select("div.property")`）返回所有房源节点列表，列表中每一项对应一条房源；`select_one()` 用在单条房源内部，只取该字段的第一个匹配节点，找不到返回 `None`，因此取值前先判断节点是否存在。面积、楼层、建造年代都在同一组 `p.property-content-info-text` 里，按内容特征取值而不是按下标：面积取以 `㎡` 结尾的项；建造年代取包含“建造”的项，用 `next(..., "")` 在缺失时填空字符串；楼层取既不是面积也不是年代、且包含“层”的项，避免把“南北”这类朝向当成楼层。单价取 `p.property-price-average`（`16465元/㎡`），不取 `p.property-price-total`（`148万`）；取值后与网页原文逐字对照（`89.9㎡`、`16465元/㎡`、`2019年建造`），单位保留，确认没有取错。
 
+**主要代码 2：提取单价与属性**
+
+```python
+avg = row.select_one("p.property-price-average")
+price = avg.get_text(strip=True) if avg else ""
+
+items = [p.get_text(strip=True) for p in row.select("p.property-content-info-text")]
+area = next((t for t in items if t.endswith("㎡")), "")
+maketime = next((t for t in items if "建造" in t), "")
+```
+
 ### 2. 下一页采集
 
 - 下一页 `href` 原值：`?page=2`（相对地址，只有查询参数）
@@ -102,6 +121,21 @@
 
 答：每页解析完后用 `next_btn = soup_page.select_one("a.next.next-active")` 找活动的“下一页”按钮；取地址必须用 `next_btn.get("href")`（`get_text()` 得到的是“下一页”三个字，不是地址），再用 `urljoin(current_url, href)` 用当前页地址补全成完整 URL，最后 `current_url = next_url` 进入下一页。防重复和防死循环有四层：① `next_btn is None` 时不取地址，直接判定末页；② `next_url.startswith(BASE_URL)` 保证地址不越出教学站；③ `visited` 集合记录已访问地址，重复地址立即报错中止；④ `max_pages=30` 安全页数上限，达到上限只记为中止、不算采集完成；此外每页之间 `time.sleep(1.5)` 降低请求频率。日志中第 2 页与第 1 页标题完全重复数为 0，说明翻页确实换页；第 10 页后按钮禁用，程序正常结束。
 
+**主要代码 3：翻页**
+
+```python
+while page_no < max_pages:
+    page_no += 1
+    next_btn = soup_page.select_one("a.next.next-active")
+    if next_btn is None:                      # 末页，停止
+        break
+    href = next_btn.get("href")               # 通常是 ?page=2
+    next_url = urljoin(current_url, href)     # 补全为完整地址
+    if not next_url.startswith(BASE_URL) or next_url in visited:
+        raise RuntimeError("下一页地址越界或重复")   # 防越界/死循环
+    current_url = next_url                    # 进入下一页
+```
+
 ### 3. 保存 CSV
 
 **截图：** CSV保存与回读代码、回读条数。框出编码、表头和数据写入部分。
@@ -113,6 +147,21 @@
 说明：8个字段的顺序是什么？按8个字段完全相同去重后，保存了多少条记录？
 
 答：顺序为 `title → house → address → struct → area → floor → maketime → price`，与建表列顺序一致。按 8 个字段完全相同去重（保留首次出现的顺序）：去重前 **600** 条，完全相同的重复 **102** 条，去重后保存 **498** 条。写入用 `csv.writer`，文件参数 `encoding="utf-8-sig"`（防止 Excel 打开中文乱码）、`newline=""`，第一行写 8 个字段的表头，之后每条记录恰好 8 项。用 `csv.DictReader` 回读，断言表头与 `FIELDS` 一致，数据行 **498** 行（表头不计入），首行、末行字段完整。
+
+**主要代码 4：保存 CSV**
+
+```python
+seen, unique_records = set(), []
+for rec in all_records:                 # 按 8 个字段整体去重
+    if tuple(rec) not in seen:
+        seen.add(tuple(rec))
+        unique_records.append(rec)
+
+with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
+    writer = csv.writer(f)
+    writer.writerow(FIELDS)             # 表头
+    writer.writerows(unique_records)    # 每条 8 项，顺序与 FIELDS 一致
+```
 
 ## 第三阶段：MySQL 数据存储
 
@@ -131,6 +180,29 @@
 说明：每条记录怎样对应8个参数？成功、失败时分别做什么？再次运行时怎样避免重复插入？
 
 答：`csv.DictReader` 读入后，按 `FIELDS` 的固定顺序把每行整理成 `[title, house, address, struct, area, floor, maketime, price]`，INSERT 语句中 8 个字段对应 8 个 `%s` 占位符，`executemany(INSERT_SQL, new_records)` 按位置一一绑定，全部通过参数传递，不用字符串拼接或 f-string。连接参数为 `host="mysql"`、`port=3306`、`database="smartpark_lab"`、`user="student"`、`password="123456"`、`charset="utf8mb4"`、`autocommit=False`。成功时 `executemany()` 返回受影响行数后调用 `conn.commit()` 提交；失败时 `except` 分支调用 `conn.rollback()` 撤销本次未提交的修改并重新抛出异常；无论成败都在 `finally` 中先 `cursor.close()` 再 `conn.close()` 释放资源。再次运行时，先 `SELECT` 出库内已有记录的 8 字段元组集合，只插入集合中不存在的记录（自增长 `id` 不能防止房源重复），所以重跑不会重复插入，也不需要清空表。
+
+**主要代码 5：批量入库**
+
+```python
+INSERT_SQL = """
+INSERT INTO houseinfo
+    (title, house, address, struct, area, floor, maketime, price)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+"""
+
+affected = cursor.executemany(INSERT_SQL, new_records)
+conn.commit()
+```
+
+**主要代码 6：数据库连接**
+
+```python
+conn = pymysql.connect(
+    host="mysql", port=3306, database="smartpark_lab",
+    user="student", password="123456",
+    charset="utf8mb4", autocommit=False,
+)
+```
 
 ### 2. 核对结果
 
@@ -206,127 +278,3 @@
 - [x] 未完成项已如实说明；学习通只交原仓库链接。
 
 如使用 AI，简述它帮助了什么，以及自己修改、运行和核对了什么：使用 AI 协助整理报告结构、生成截图与核对脚本；采集、CSV 保存、入库和 MySQL 查询均在本机课程环境中实际运行，截图中的页码、条数、样本和报错都是本次真实运行结果，本人逐条核对了首条、跨页条和末条。
-
-## 附：关键代码
-
-以下只保留关键逻辑，变量名与正文一致；完整代码见 `lab02/anjuke.ipynb`。
-
-### 1. 解析 8 个字段
-
-```python
-FIELDS = ["title", "house", "address", "struct", "area", "floor", "maketime", "price"]
-
-
-def parse_property(row):
-    """按固定顺序解析一条房源，返回 8 个字段"""
-    h3 = row.select_one("h3")
-    title = h3.get_text(strip=True) if h3 else ""
-
-    comm = row.select_one("p.property-content-info-comm-name")
-    house = comm.get_text(strip=True) if comm else ""
-
-    addr = row.select_one("p.property-content-info-comm-address")
-    address = addr.get_text(strip=True) if addr else ""
-
-    attr = row.select_one("p.property-content-info-attribute")
-    struct = attr.get_text(strip=True) if attr else ""
-
-    # 面积/楼层/年代按内容特征取值；节点缺失或顺序变化时不会取错
-    items = [p.get_text(strip=True) for p in row.select("p.property-content-info-text")]
-    items = [t for t in items if t and t != struct]
-    area = next((t for t in items if t.endswith("㎡")), "")
-    maketime = next((t for t in items if "建造" in t), "")
-    floor = next((t for t in items if t not in (area, maketime) and "层" in t), "")
-
-    avg = row.select_one("p.property-price-average")
-    price = avg.get_text(strip=True) if avg else ""
-
-    return [title, house, address, struct, area, floor, maketime, price]
-
-
-rows = soup.select("div.property")   # 当前页全部房源卡片
-first = parse_property(rows[0])      # 解析第一条
-```
-
-### 2. 翻页采集
-
-```python
-def collect_all(base_url, max_pages=30):
-    out_list, visited = [], {base_url}
-    current_url, page_no = base_url, 0
-
-    while page_no < max_pages:
-        page_no += 1
-        _, _, soup_page = fetch_page(current_url)
-        page_rows = soup_page.select("div.property")
-        out_list.extend(parse_property(r) for r in page_rows)
-
-        # 停止条件 1：末页按钮的 next-active 消失
-        next_btn = soup_page.select_one("a.next.next-active")
-        if next_btn is None:
-            break
-
-        href = next_btn.get("href")                 # 原值通常为 ?page=2
-        next_url = urljoin(current_url, href)       # 补全为完整地址
-        if not next_url.startswith(BASE_URL):       # 停止条件 2：越出教学站
-            raise RuntimeError("下一页地址越界")
-        if next_url in visited:                     # 停止条件 3：防死循环
-            raise RuntimeError("下一页地址重复")
-
-        visited.add(next_url)
-        current_url = next_url                      # 更新地址，进入下一页
-        time.sleep(1.5)
-    return out_list
-```
-
-### 3. CSV 去重与保存
-
-```python
-seen, unique_records = set(), []
-for rec in all_records:
-    key = tuple(rec)                 # 按 8 个字段整体比较
-    if key not in seen:
-        seen.add(key)
-        unique_records.append(rec)
-
-csv_path = Path("data/houseinfo.csv")
-csv_path.parent.mkdir(exist_ok=True)
-with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
-    writer = csv.writer(f)
-    writer.writerow(FIELDS)          # 表头
-    writer.writerows(unique_records) # 每条记录 8 项，顺序与 FIELDS 一致
-```
-
-### 4. PyMySQL 批量入库
-
-```python
-import pymysql
-
-INSERT_SQL = """
-INSERT INTO houseinfo
-    (title, house, address, struct, area, floor, maketime, price)
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-"""
-
-conn = pymysql.connect(
-    host="mysql", port=3306, database="smartpark_lab",
-    user="student", password="123456",
-    charset="utf8mb4", autocommit=False,
-)
-cursor = conn.cursor()
-try:
-    cursor.execute(
-        "SELECT title, house, address, struct, area, floor, maketime, price FROM houseinfo")
-    existing = {tuple(t) for t in cursor.fetchall()}
-    new_records = [rec for rec in records if tuple(rec) not in existing]
-
-    affected = cursor.executemany(INSERT_SQL, new_records)
-    conn.commit()                    # 成功提交
-    print("executemany() 受影响行数:", affected)
-except Exception:
-    conn.rollback()                  # 失败回滚
-    raise
-finally:
-    cursor.close()                   # 先关游标，再关连接
-    conn.close()
-```
